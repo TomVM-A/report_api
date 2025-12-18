@@ -50,15 +50,17 @@ los valores seran nombre del producto, valor, y cantidad vendida
 # to create a API with FastAPI
 # handle error responses with HTTPException
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 # we use pydantic:
 # BaseModel to ask for request body
 # Field to validate with Annotate more constrictions over the fields
 from pydantic import BaseModel, Field
 # we use decimal to get more precition with money data
 from decimal import Decimal
-# we use reportlab:
+# we use reportlab and io to respon with a pdf:
 # to create pdf file
 # to crear graphs
+import io
 from reportlab.pdfgen import canvas
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.charts.barcharts import VerticalBarChart
@@ -67,19 +69,20 @@ from reportlab.graphics import renderPDF
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+
 app = FastAPI()
 
 # -- domain --
 class ItemSale(BaseModel):
     name: str
-    price: Decimal = Field(gt=0, description="The price must be greater than zero")
+    price: float = Field(gt=0, description="The price must be greater than zero")
     quantity: int = Field(gt=0, description="The price must be greater than zero")
 
 # -- application / use_cases --
 def create_graph(items):
-        # Extraer nombres para las etiquetas y cantidades para las barras
-    names = [p["name"] for p in items]
-    price = [p["price"] for p in items]
+    # Extraer nombres para las etiquetas y cantidades para las barras
+    names = [p.name for p in items]
+    prices = [p.price for p in items]
 
     # Crear un contenedor para el dibujo (Ancho, Alto)
     draw = Drawing(400, 200)
@@ -90,12 +93,12 @@ def create_graph(items):
     bar_chart.y = 50
     bar_chart.height = 125
     bar_chart.width = 300
-    bar_chart.data = [price] # Debe ser una lista de listas
+    bar_chart.data = [prices] # Debe ser una lista de listas
     bar_chart.strokeColor = colors.black
 
     # Configurar ejes
     bar_chart.valueAxis.valueMin = 0
-    bar_chart.valueAxis.valueMax = max(price) + Decimal(5)
+    bar_chart.valueAxis.valueMax = max(prices) + 5.0
     bar_chart.categoryAxis.categoryNames = names
     bar_chart.categoryAxis.labels.boxAnchor = 'ne'
     bar_chart.categoryAxis.labels.dx = 0
@@ -108,9 +111,30 @@ def create_graph(items):
     draw.add(bar_chart)
     return draw
 
-def create_pdf(items):
-    # 3. Construir el PDF
-    doc = SimpleDocTemplate("reporte_productos.pdf")
+# this is here for reference, and as a remainder of a first try
+# def create_pdf(items):
+#     3. Construir el PDF
+#     doc = SimpleDocTemplate("reporte_productos.pdf")
+#     elementos = []
+#     estilos = getSampleStyleSheet()
+
+#     elementos.append(Paragraph("Reporte de Inventario", estilos['Title']))
+#     elementos.append(Spacer(1, 12))
+#     elementos.append(Paragraph("Cantidad de productos en existencia:", estilos['Normal']))
+#     elementos.append(Spacer(1, 20))
+
+#     Añadir la gráfica al PDF
+#     elementos.append(create_graph(items))
+
+#     doc.build(elementos)
+#     print("PDF generado con éxito: reporte_productos.pdf")
+
+def create_pdf_in_memory(items):
+    # 1. Crear el buffer de memoria
+    buffer = io.BytesIO()
+
+    # 2. Construir el PDF usando el buffer en lugar de un nombre de archivo
+    doc = SimpleDocTemplate(buffer)
     elementos = []
     estilos = getSampleStyleSheet()
 
@@ -125,13 +149,35 @@ def create_pdf(items):
     doc.build(elementos)
     print("PDF generado con éxito: reporte_productos.pdf")
 
+    # 3. Mover el "puntero" al inicio del buffer para poder leerlo
+    buffer.seek(0)
+
+    return buffer
+
 # -- infrastructure / adapter --
 def process_data(list_of_items_sales: list):
-    pdf_report = create_pdf(list_of_items_sales)
+    return create_pdf_in_memory(list_of_items_sales)
 # -- External / presentation --
 
+# this is here for reference, and as a remainder of a first try
+# @app.post("/pdf-report")
+# async def PDFReport(items: list[ItemSale]):
+#     # read data and get graphics
+#     return process_data(items)
+
 @app.post("/pdf-report")
-async def PDFReport(items: list[ItemSale]):
-    # read data and get graphics
-    process_data(items)
-    return {"pdf": "tu reporte"}
+async def pdf_report_endpoint(items: list[ItemSale]):
+    try:
+        # Generamos el buffer con el contenido del PDF
+        pdf_buffer = process_data(items)
+
+        # Retornamos una respuesta de streaming
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": "attachment; filename=reporte_ventas.pdf"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
